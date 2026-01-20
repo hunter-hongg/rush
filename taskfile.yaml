@@ -25,3 +25,8 @@ tasks:
     desc: "format别名"
     cmds: 
       - task: format
+  
+  clippy: 
+    desc: "代码检查"
+    cmds: 
+      - cargo clippy

@@ -1,0 +1,51 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  schedule:
+    # 每天格林尼治时间0点（UTC 00:00）运行
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  clippy:
+    name: Clippy Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    
+    - name: Run Clippy
+      run: cargo clippy -- -D warnings
+
+  build-release:
+    name: Release Build
+    runs-on: ubuntu-latest
+    # 每天定时或手动触发时运行，推送时不运行
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Build Release
+      run: cargo build --release
+    
+    - name: Upload Artifact (可选)
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-binary
+        path: target/release/
+        retention-days: 7

@@ -22,7 +22,7 @@ fn get_cwd() -> String {
     match std::env::current_dir() {
         Ok(_) => {
             format!("{}工作目录 {}{}", CYAN, get_cwd_raw(), COLOR_NULL)
-        },
+        }
         Err(_) => format!("{}错误的工作目录{}", RED, COLOR_NULL),
     }
 }
@@ -32,7 +32,7 @@ fn get_cwd_raw() -> String {
         Ok(p) => {
             let pwd = format!("{}", p.display());
             pwd.replace(&get_home(), "~")
-        },
+        }
         Err(_) => "".to_string(),
     }
 }
@@ -48,7 +48,7 @@ fn exec_exit(line: bool, args: Vec<&str>) {
         match args[0].parse::<i32>() {
             Ok(n) => {
                 exit(n);
-            },
+            }
             Err(_) => exit(0),
         }
     }
@@ -73,15 +73,12 @@ fn exec_cd(args: Vec<&str>) {
     for i in args {
         if i.starts_with("-") {
             flags.push(i);
-        } else {
-            if path == "" {
-                path = i;
-            }
+        } else if path.is_empty() {
+            path = i;
         }
     }
-    match std::env::set_current_dir(path) {
-        Err(e) => println!("{}cd失败: {}{}", RED, e, COLOR_NULL),
-        _ => return,
+    if let Err(e) = std::env::set_current_dir(path) {
+        println!("{}cd失败: {}{}", RED, e, COLOR_NULL);
     }
 }
 
@@ -90,7 +87,7 @@ fn exec_pwd(args: Vec<&str>) {
     for i in args {
         if i.starts_with("-") {
             flags.push(i);
-        } 
+        }
     }
     println!("{}", get_cwd_raw());
 }
@@ -125,14 +122,13 @@ fn parse(trimmed: &str) {
         return;
     }
     let command = trimmed_to_list[0];
-    let args: Vec<&str>;
-    if trimmed_to_list.len() > 1 {
-        args = trimmed_to_list[1..].to_vec();
+    let args: Vec<&str> = if trimmed_to_list.len() > 1 {
+        trimmed_to_list[1..].to_vec()
     } else {
-        args = vec![];
-    }
+        vec![]
+    };
     match command {
-        "" => return,
+        "" => (),
         "exit" => exec_exit(true, args),
         "help" => exec_help(),
         "welc" | "welcome" => exec_welcome(),
@@ -158,7 +154,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!(
             "{}Rush 版本 {}{} 构建版本 {} {} {}",
-            BLUE, VERSION, YELLOW, RUSH_TYPE, get_cwd(), COLOR_NULL
+            BLUE,
+            VERSION,
+            YELLOW,
+            RUSH_TYPE,
+            get_cwd(),
+            COLOR_NULL
         );
         match rl.readline(&format!("{}$ {}", PURPLE, COLOR_NULL)) {
             Ok(line) => {
