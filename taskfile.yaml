@@ -1,0 +1,27 @@
+version: '3'
+
+tasks:
+  default:
+    desc: "执行构建并运行"
+    cmds:
+      - task: run
+
+  run:
+    desc: "构建并运行"
+    cmds:
+      - cargo run
+
+  build:
+    desc: "构建"
+    cmds:
+      - cargo build --release
+  
+  format: 
+    desc: "格式化"
+    cmds: 
+      - cargo fmt 
+  
+  fmt: 
+    desc: "format别名"
+    cmds: 
+      - task: format
