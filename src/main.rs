@@ -1,6 +1,7 @@
 use std::process::exit;
 
 use rustyline::{Config, Editor, error::ReadlineError, history::FileHistory};
+use users::{get_user_by_name, os::unix::UserExt};
 
 const BLUE: &str = "\x1b[34m";
 const RED: &str = "\x1b[31m";
@@ -21,20 +22,23 @@ fn get_home() -> String {
 fn get_cwd() -> String {
     match std::env::current_dir() {
         Ok(_) => {
-            format!("{}工作目录 {}{}", CYAN, get_cwd_raw(), COLOR_NULL)
+            format!("{}{}{}", CYAN, get_cwd_raw(), COLOR_NULL)
         }
         Err(_) => format!("{}错误的工作目录{}", RED, COLOR_NULL),
     }
 }
 
-fn get_cwd_raw() -> String {
+fn get_cwd_raw_nochange() -> String {
     match std::env::current_dir() {
         Ok(p) => {
-            let pwd = format!("{}", p.display());
-            pwd.replace(&get_home(), "~")
+            format!("{}", p.display())
         }
         Err(_) => "".to_string(),
     }
+}
+
+fn get_cwd_raw() -> String {
+    get_cwd_raw_nochange().replace(&get_home(), "~")
 }
 
 fn exec_exit(line: bool, args: Vec<&str>) {
@@ -67,9 +71,36 @@ fn exec_welcome() {
     );
 }
 
+fn get_specific_user_home(username: &str) -> Option<String> {
+    get_user_by_name(username).and_then(|user| user.home_dir().to_str().map(String::from))
+}
+
+fn replace_before_first(input: &str, delimiter: char, replacement: &str) -> String {
+    if let Some(pos) = input.find(delimiter) {
+        format!("{}{}", replacement, &input[pos..])
+    } else {
+        input.to_string()
+    }
+}
+
+fn substring_between(start_pos: usize, end_char: char, s: &str) -> Option<&str> {
+    // 检查起始位置是否有效
+    if start_pos >= s.len() || !s.is_char_boundary(start_pos) {
+        return None;
+    }
+
+    // 从指定位置开始查找结束字符
+    let substring = &s[start_pos..];
+    let relative_pos = substring.find(end_char)?;
+
+    // 返回不包含结束字符的子串
+    Some(&substring[..relative_pos])
+}
+
 fn exec_cd(args: Vec<&str>) {
     let mut flags: Vec<&str> = vec![];
     let mut path: &str = "";
+    let pathstring: String;
     for i in args {
         if i.starts_with("-") {
             flags.push(i);
@@ -77,8 +108,44 @@ fn exec_cd(args: Vec<&str>) {
             path = i;
         }
     }
+    if path.is_empty() {
+        path = "~";
+    }
+    if path.starts_with("~") {
+        if path.len() == 1 {
+            pathstring = std::env::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            path = &pathstring;
+        } else if path.chars().nth(1) == Some('/') {
+            pathstring = std::env::home_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+                + &path[1..];
+            path = &pathstring;
+        } else if path.contains("/") {
+            pathstring = if let Some(username) = substring_between(1, '/', path) {
+                if let Some(user_home) = get_specific_user_home(username) {
+                    replace_before_first(path, '/', &user_home)
+                } else {
+                    path.to_string() // 保持原样
+                }
+            } else {
+                path.to_string() // 保持原样
+            };
+            path = &pathstring;
+        } else {
+            let username = &path[1..];
+            if let Some(user_home) = get_specific_user_home(username) {
+                pathstring = user_home;
+            } else {
+                pathstring = "".to_string();
+            }
+            path = &pathstring;
+        }
+    }
     if let Err(e) = std::env::set_current_dir(path) {
-        println!("{}cd失败: {}{}", RED, e, COLOR_NULL);
+        println!("{}cd {}失败: {}{}", RED, path, e, COLOR_NULL);
     }
 }
 
@@ -89,7 +156,7 @@ fn exec_pwd(args: Vec<&str>) {
             flags.push(i);
         }
     }
-    println!("{}", get_cwd_raw());
+    println!("{}", get_cwd_raw_nochange());
 }
 
 fn exec_help() {
@@ -153,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         println!();
         println!(
-            "{}Rush 版本 {}{} 构建版本 {} {} {}",
+            "{}Rush {}{} {} {} {}",
             BLUE,
             VERSION,
             YELLOW,
