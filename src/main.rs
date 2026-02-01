@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::process::exit;
 
-use rustyline::{error::ReadlineError, history::FileHistory, Config, Editor};
+use rustyline::{Config, Editor, error::ReadlineError, history::FileHistory};
 use users::{get_user_by_name, os::unix::UserExt};
 
 const BLUE: &str = "\x1b[34m";
@@ -11,6 +12,11 @@ const PURPLE: &str = "\x1b[35m";
 const COLOR_NULL: &str = "\x1b[0;0m";
 const VERSION: &str = "0.0.1";
 const RUSH_TYPE: &str = "beta";
+
+// 使用线程本地存储来保存逻辑路径栈
+thread_local! {
+    static LOGICAL_PATH_STACK: RefCell<Option<Vec<String>>> = const {RefCell::new(None)};
+}
 
 fn get_home() -> String {
     match std::env::home_dir() {
@@ -23,19 +29,6 @@ fn get_cwd() -> String {
     let res = logical_path_stack_beautiful().replace(&get_home(), "~");
     format!("{}{}{}", CYAN, res, COLOR_NULL)
 }
-
-// fn get_cwd_raw_nochange() -> String {
-//     match std::env::current_dir() {
-//         Ok(p) => {
-//             format!("{}", p.display())
-//         }
-//         Err(_) => "".to_string(),
-//     }
-// }
-
-// fn get_cwd_raw() -> String {
-//     get_cwd_raw_nochange().replace(&get_home(), "~")
-// }
 
 fn exec_exit(line: bool, args: Vec<&str>) {
     if line {
@@ -94,8 +87,6 @@ fn substring_between(start_pos: usize, end_char: char, s: &str) -> Option<&str> 
 }
 
 // 全局变量用于存储逻辑路径栈（符号链接路径）
-static mut LOGICAL_PATH_STACK: Option<Vec<String>> = None;
-
 fn exec_cd(args: Vec<&str>) {
     let mut flags: Vec<&str> = vec![];
     let mut path: &str = "";
@@ -147,8 +138,8 @@ fn exec_cd(args: Vec<&str>) {
     // 检查是否使用了-P标志（解析符号链接）
     let use_physical_path = flags.iter().any(|&f| f.contains('P'));
 
-    // 保存当前的逻辑路径栈，用于后续判断
-    let old_logical_path_stack = unsafe { LOGICAL_PATH_STACK.clone() };
+    // 从线程本地存储获取旧的逻辑路径栈
+    let old_logical_path_stack = LOGICAL_PATH_STACK.with(|stack| stack.borrow().clone());
 
     // 根据-P标志决定是否解析符号链接
     let actual_path = if use_physical_path {
@@ -169,9 +160,8 @@ fn exec_cd(args: Vec<&str>) {
     }
 
     // 按照算法解析path并更新LOGICAL_PATH_STACK
-    unsafe {
-        LOGICAL_PATH_STACK = Some(process_logical_path_stack(old_logical_path_stack, path));
-    }
+    let new_path_stack = process_logical_path_stack(old_logical_path_stack, path);
+    LOGICAL_PATH_STACK.with(|stack| *stack.borrow_mut() = Some(new_path_stack));
 }
 
 // 按照算法解析路径，返回路径栈
@@ -179,7 +169,7 @@ fn process_logical_path_stack(
     current_path_stack_raw: Option<Vec<String>>,
     new_path: &str,
 ) -> Vec<String> {
-    let mut path_parts: Vec<&str> = new_path.split('/').collect();
+    let path_parts: Vec<&str> = new_path.split('/').collect();
     let mut temp_stack: Vec<String> = Vec::new();
     let is_absolute = new_path.starts_with('/');
     let mut current_path_stack = current_path_stack_raw.clone().unwrap_or_default();
@@ -194,10 +184,8 @@ fn process_logical_path_stack(
                     temp_stack.pop();
                 } else {
                     // 如果临时栈为空，从当前路径栈中弹出一个元素（如果存在）
-                    if !is_absolute {
-                        if !current_path_stack.is_empty() {
-                            current_path_stack.pop();
-                        }
+                    if !is_absolute && !current_path_stack.is_empty() {
+                        current_path_stack.pop();
                     }
                 }
             }
@@ -223,27 +211,29 @@ fn process_logical_path_stack(
 }
 
 fn logical_path_stack_beautiful() -> String {
-    let mut result = String::new();
-    let logical_path_stack = unsafe { LOGICAL_PATH_STACK.clone().unwrap_or_default() };
-
-    for (_, path) in logical_path_stack.iter().enumerate() {
-        if !result.ends_with('/') && path != "/" {
-            result += "/";
+    LOGICAL_PATH_STACK.with(|stack| match stack.borrow().as_ref() {
+        Some(path_stack) => {
+            let mut res = String::new();
+            for path in path_stack.iter() {
+                if !res.ends_with('/') && path != "/" {
+                    res += "/";
+                }
+                res += path;
+            }
+            res
         }
-        result += path;
-    }
-
-    result
+        None => std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    })
 }
 
 fn exec_pwd(args: Vec<&str>) {
     let mut use_physical_path = false; // 对应 -P 参数
 
     for arg in args {
-        if arg.starts_with("-") {
-            if arg.contains('P') {
-                use_physical_path = true;
-            }
+        if arg.starts_with("-") && arg.contains('P') {
+            use_physical_path = true;
         }
     }
 
@@ -265,13 +255,13 @@ fn exec_pwd(args: Vec<&str>) {
         }
     } else {
         // 对于 -L 或默认情况，显示逻辑路径（包含符号链接）
-        unsafe {
+        LOGICAL_PATH_STACK.with(|stack| {
             // 根据POSIX标准，-L是默认行为，所以我们优先考虑逻辑路径
             // 如果有记录的逻辑路径栈，就打印它；否则使用当前目录
-            match LOGICAL_PATH_STACK.as_ref() {
+            match stack.borrow().as_ref() {
                 Some(path_stack) => {
                     let logical_path = if path_stack.is_empty() {
-                        "/".to_string() // 根目录
+                        "/".to_string() // 根据POSIX标准，根目录是"/"
                     } else {
                         logical_path_stack_beautiful()
                     };
@@ -285,7 +275,7 @@ fn exec_pwd(args: Vec<&str>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -338,8 +328,8 @@ fn parse(trimmed: &str) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     exec_welcome();
 
-    unsafe {
-        LOGICAL_PATH_STACK = Some(
+    LOGICAL_PATH_STACK.with(|stack| {
+        *stack.borrow_mut() = Some(
             std::env::current_dir()
                 .unwrap()
                 .iter()
@@ -347,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
-    }
+    });
 
     // 创建自定义配置
     let config = Config::builder()
