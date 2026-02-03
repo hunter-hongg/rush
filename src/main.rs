@@ -159,9 +159,22 @@ fn exec_cd(args: Vec<&str>) {
         return;
     }
 
-    // 按照算法解析path并更新LOGICAL_PATH_STACK
-    let new_path_stack = process_logical_path_stack(old_logical_path_stack, path);
-    LOGICAL_PATH_STACK.with(|stack| *stack.borrow_mut() = Some(new_path_stack));
+    if use_physical_path {
+        LOGICAL_PATH_STACK.with(|stack| {
+            *stack.borrow_mut() = Some(vec![
+                std::env::current_dir()
+                    .unwrap_or(std::path::PathBuf::from("/"))
+                    .display()
+                    .to_string()
+                    .split('/')
+                    .collect(),
+            ]);
+        });
+    } else {
+        // 按照算法解析path并更新LOGICAL_PATH_STACK
+        let new_path_stack = process_logical_path_stack(old_logical_path_stack, path);
+        LOGICAL_PATH_STACK.with(|stack| *stack.borrow_mut() = Some(new_path_stack));
+    }
 }
 
 // 按照算法解析路径，返回路径栈
