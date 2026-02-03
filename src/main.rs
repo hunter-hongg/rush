@@ -196,11 +196,8 @@ fn process_logical_path_stack(
                 // ..，临时栈出栈元素，没有元素保持不变
                 if !temp_stack.is_empty() {
                     temp_stack.pop();
-                } else {
-                    // 如果临时栈为空，从当前路径栈中弹出一个元素（如果存在）
-                    if !is_absolute && !current_path_stack.is_empty() {
-                        current_path_stack.pop();
-                    }
+                } else if !is_absolute && !current_path_stack.is_empty() {
+                    current_path_stack.pop();
                 }
             }
             _ => {
