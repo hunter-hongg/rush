@@ -161,14 +161,15 @@ fn exec_cd(args: Vec<&str>) {
 
     if use_physical_path {
         LOGICAL_PATH_STACK.with(|stack| {
-            *stack.borrow_mut() = Some(vec![
+            *stack.borrow_mut() = Some(
                 std::env::current_dir()
                     .unwrap_or(std::path::PathBuf::from("/"))
                     .display()
                     .to_string()
                     .split('/')
+                    .map(|s| s.to_string())
                     .collect(),
-            ]);
+            );
         });
     } else {
         // 按照算法解析path并更新LOGICAL_PATH_STACK
