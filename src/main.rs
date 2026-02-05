@@ -1,5 +1,5 @@
-use std::cell::RefCell;
 use std::process::exit;
+use std::{cell::RefCell, env::current_dir};
 
 use rustyline::{Config, Editor, error::ReadlineError, history::FileHistory};
 use users::{get_user_by_name, os::unix::UserExt};
@@ -13,9 +13,9 @@ const COLOR_NULL: &str = "\x1b[0;0m";
 const VERSION: &str = "0.0.1";
 const RUSH_TYPE: &str = "beta";
 
-// 使用线程本地存储来保存逻辑路径栈
 thread_local! {
     static LOGICAL_PATH_STACK: RefCell<Option<Vec<String>>> = const {RefCell::new(None)};
+    static LOGICAL_PATH_OLDS: RefCell<Option<Vec<std::path::PathBuf>>> = const {RefCell::new(None)};
 }
 
 fn get_home() -> String {
@@ -88,32 +88,92 @@ fn substring_between(start_pos: usize, end_char: char, s: &str) -> Option<&str> 
 
 // 全局变量用于存储逻辑路径栈（符号链接路径）
 fn exec_cd(args: Vec<&str>) {
+    // 首先检查是否有 - 参数（切换到上一个目录）
+    let switch_to_previous = args.iter().any(|&arg| arg == "-");
+    
+    if switch_to_previous {
+        // 处理 cd - 命令
+        let previous_path = LOGICAL_PATH_OLDS.with(|stack| {
+            if let Some(history) = stack.borrow_mut().as_mut() {
+                // 弹出上一个目录（如果存在）
+                match history.pop() {
+                    Some(prev_dir) => {
+                        // 将当前目录加入历史记录
+                        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+                        history.push(current_dir);
+                        Some(prev_dir)
+                    },
+                    None => {
+                        // 如果没有历史记录，保持在当前目录
+                        println!("{}cd -: 没有上一个目录记录{}", YELLOW, COLOR_NULL);
+                        None
+                    }
+                }
+            } else {
+                println!("{}cd -: 目录历史记录未初始化{}", RED, COLOR_NULL);
+                None
+            }
+        });
+        
+        if let Some(target_path) = previous_path {
+            // 切换到上一个目录
+            match std::env::set_current_dir(&target_path) {
+                Ok(_) => {
+                    // 更新逻辑路径栈
+                    LOGICAL_PATH_STACK.with(|stack| {
+                        *stack.borrow_mut() = Some(
+                            target_path
+                                .iter()
+                                .map(|os_str| os_str.to_string_lossy().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect(),
+                        );
+                    });
+                    println!("{}", logical_path_stack_beautiful());
+                },
+                Err(e) => {
+                    println!("{}cd -: 切换到 {} 失败: {}{}", RED, target_path.display(), e, COLOR_NULL);
+                }
+            }
+        }
+        return; // 处理完 cd - 后直接返回，不执行下面的正常 cd 逻辑
+    }
+    
     let mut flags: Vec<&str> = vec![];
     let mut path: &str = "";
     let pathstring: String;
-    for i in args {
-        if i.starts_with("-") {
-            flags.push(i);
+    
+    // 解析参数：标志和路径
+    for arg in args {
+        if arg.starts_with("-") {
+            flags.push(arg);
         } else if path.is_empty() {
-            path = i;
+            path = arg;
         }
     }
+    
+    // 如果没有指定路径，则默认为家目录
     if path.is_empty() {
         path = "~";
     }
+    
+    // 处理波浪号 ~ 路径
     if path.starts_with("~") {
         if path.len() == 1 {
+            // 单独的 ~，表示当前用户的家目录
             pathstring = std::env::home_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             path = &pathstring;
-        } else if path.chars().nth(1) == Some('/') {
+        } else if path.chars().nth(1) == Some('/') || path.len() == 2 {
+            // ~/
             pathstring = std::env::home_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default()
                 + &path[1..];
             path = &pathstring;
         } else if path.contains("/") {
+            // ~/username/path 形式
             pathstring = if let Some(username) = substring_between(1, '/', path) {
                 if let Some(user_home) = get_specific_user_home(username) {
                     replace_before_first(path, '/', &user_home)
@@ -125,6 +185,7 @@ fn exec_cd(args: Vec<&str>) {
             };
             path = &pathstring;
         } else {
+            // ~username 形式
             let username = &path[1..];
             if let Some(user_home) = get_specific_user_home(username) {
                 pathstring = user_home;
@@ -138,8 +199,13 @@ fn exec_cd(args: Vec<&str>) {
     // 检查是否使用了-P标志（解析符号链接）
     let use_physical_path = flags.iter().any(|&f| f.contains('P'));
 
-    // 从线程本地存储获取旧的逻辑路径栈
-    let old_logical_path_stack = LOGICAL_PATH_STACK.with(|stack| stack.borrow().clone());
+    // 保存当前目录到历史记录
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    LOGICAL_PATH_OLDS.with(|stack| {
+        if let Some(history) = stack.borrow_mut().as_mut() {
+            history.push(current_dir);
+        }
+    });
 
     // 根据-P标志决定是否解析符号链接
     let actual_path = if use_physical_path {
@@ -154,25 +220,28 @@ fn exec_cd(args: Vec<&str>) {
         std::path::PathBuf::from(path)
     };
 
+    // 尝试切换到目标目录
     if let Err(e) = std::env::set_current_dir(&actual_path) {
         println!("{}cd {}失败: {}{}", RED, path, e, COLOR_NULL);
         return;
     }
 
+    // 更新逻辑路径栈
     if use_physical_path {
+        // 使用物理路径时，直接使用系统解析后的路径
         LOGICAL_PATH_STACK.with(|stack| {
             *stack.borrow_mut() = Some(
                 std::env::current_dir()
                     .unwrap_or(std::path::PathBuf::from("/"))
-                    .display()
-                    .to_string()
-                    .split('/')
-                    .map(|s| s.to_string())
+                    .iter()
+                    .map(|os_str| os_str.to_string_lossy().to_string())
+                    .filter(|s| !s.is_empty())
                     .collect(),
             );
         });
     } else {
-        // 按照算法解析path并更新LOGICAL_PATH_STACK
+        // 使用逻辑路径时，按照算法解析并更新路径栈
+        let old_logical_path_stack = LOGICAL_PATH_STACK.with(|stack| stack.borrow().clone());
         let new_path_stack = process_logical_path_stack(old_logical_path_stack, path);
         LOGICAL_PATH_STACK.with(|stack| *stack.borrow_mut() = Some(new_path_stack));
     }
@@ -348,6 +417,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .filter(|s| !s.is_empty())
                 .collect(),
         );
+    });
+
+    LOGICAL_PATH_OLDS.with(|stack| {
+        *stack.borrow_mut() = Some(vec![]);
     });
 
     // 创建自定义配置
